@@ -101,7 +101,7 @@ async def document_socket(
                         }
                     )
 
-                        elif msg_type == "typing":
+            elif msg_type == "typing":
                 await manager.broadcast(
                     document_id, {"type": "typing", "username": username}, exclude=websocket
                 )
