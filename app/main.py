@@ -101,10 +101,16 @@ async def document_socket(
                         }
                     )
 
-            elif msg_type == "typing":
+                        elif msg_type == "typing":
                 await manager.broadcast(
                     document_id, {"type": "typing", "username": username}, exclude=websocket
                 )
+
+            elif msg_type == "ping":
+                # Heartbeat from the client, purely to keep the connection
+                # looking "active" to any reverse proxy sitting in front of
+                # this server (e.g. Render) that closes idle WebSockets.
+                await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
         manager.disconnect(websocket, document_id)

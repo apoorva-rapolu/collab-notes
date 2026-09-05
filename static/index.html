@@ -133,31 +133,83 @@
   let editGeneration = 0;
   let sentGeneration = -1;
 
-  let suppressEcho = false;
+    let suppressEcho = false;
   let typingTimeout = null;
   let editTimeout = null;
 
   const protocol =
     window.location.protocol === "https:" ? "wss" : "ws";
 
-  const ws = new WebSocket(
-    `${protocol}://${window.location.host}/ws/${encodeURIComponent(
-      documentId
-    )}?username=${encodeURIComponent(username)}`
-  );
+  // ---------------------------------------------------------
+  // Apply a remote update to the textarea without losing the
+  // user's cursor position if they currently have it focused.
+  // This is a best-effort fix, not a true merge: if the remote
+  // edit inserted/removed text *before* the cursor, the cursor
+  // will land at a slightly different logical position. But it
+  // no longer yanks the box out from under the user entirely.
+  // ---------------------------------------------------------
+  function applyRemoteContent(newContent) {
+    const hadFocus = document.activeElement === editor;
+    const { selectionStart, selectionEnd } = editor;
 
-  ws.onopen = () => {
-    statusEl.textContent = "connected";
-    statusEl.className = "connected";
-  };
+    suppressEcho = true;
+    editor.value = newContent;
+    suppressEcho = false;
 
-  ws.onclose = () => {
-    statusEl.textContent = "disconnected";
-    statusEl.className = "disconnected";
-    editor.disabled = true;
-  };
+    if (hadFocus) {
+      const start = Math.min(selectionStart, newContent.length);
+      const end = Math.min(selectionEnd, newContent.length);
+      editor.setSelectionRange(start, end);
+    }
+  }
 
-  ws.onmessage = (event) => {
+  // ---------------------------------------------------------
+  // WebSocket connection, wrapped so we can reconnect on drop.
+  // Render's proxy (and most reverse proxies) can close a
+  // WebSocket that's been idle for a while, so losing the
+  // connection is expected, not exceptional -- we just need to
+  // come back from it instead of leaving the editor disabled.
+  // ---------------------------------------------------------
+  let ws;
+  let reconnectDelay = 1000;
+  let heartbeatInterval = null;
+
+  function connectWebSocket() {
+    ws = new WebSocket(
+      `${protocol}://${window.location.host}/ws/${encodeURIComponent(
+        documentId
+      )}?username=${encodeURIComponent(username)}`
+    );
+
+    ws.onopen = () => {
+      statusEl.textContent = "connected";
+      statusEl.className = "connected";
+      reconnectDelay = 1000; // reset backoff after a successful connection
+
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }
+      }, 20000);
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = "reconnecting…";
+      statusEl.className = "disconnected";
+      editor.disabled = true;
+      clearInterval(heartbeatInterval);
+
+      // Exponential backoff, capped at 10s, so a persistent outage
+      // doesn't hammer the server with reconnect attempts.
+      setTimeout(connectWebSocket, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+    };
+
+    ws.onmessage = handleMessage;
+  }
+
+  function handleMessage(event) {
     const msg = JSON.parse(event.data);
 
     switch (msg.type) {
@@ -220,32 +272,34 @@
           break;
         }
 
-        /*
+              /*
          * Update from another user.
          */
         if (!isOwnUpdate) {
 
           /*
-           * If the user is not currently editing, show the new
-           * server content immediately.
+           * Apply it as long as WE don't have unsent local changes
+           * pending. Being focused in the box is fine -- we preserve
+           * cursor position in applyRemoteContent() -- what we must
+           * not do is stomp on keystrokes the user has typed but not
+           * sent yet (that's the editGeneration !== sentGeneration
+           * case, handled by the "else" below).
            */
-          if (
-            document.activeElement !== editor &&
-            editGeneration === sentGeneration
-          ) {
-            suppressEcho = true;
-            editor.value = msg.content;
-            suppressEcho = false;
-
+          if (editGeneration === sentGeneration) {
+            applyRemoteContent(msg.content);
             editBaseVersion = msg.version;
           }
+          /*
+           * Else: we have unsent local edits. Leave the box alone so
+           * the user isn't interrupted mid-keystroke. editBaseVersion
+           * stays where it was, so our next edit will correctly be
+           * flagged as a conflict against this newer version and the
+           * conflict banner will explain what happened.
+           */
 
           /*
-           * Always remember the newest server version.
-           *
-           * IMPORTANT:
-           * We do NOT change editBaseVersion while the user has
-           * unsent local changes.
+           * Always remember the newest server version, regardless of
+           * whether we applied it to the textarea just now.
            */
           serverVersion = msg.version;
 
@@ -306,13 +360,20 @@
         break;
       }
 
-      case "user_joined":
+            case "user_joined":
       case "user_left": {
         console.log(msg.type, msg.username);
         break;
       }
+
+      case "pong":
+        // Heartbeat reply -- nothing to do, its purpose is just to have
+        // kept the connection active.
+        break;
     }
-  };
+  }
+
+  connectWebSocket();
 
   function updateMeta(msg) {
     metaEl.textContent =
