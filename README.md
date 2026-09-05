@@ -95,15 +95,4 @@ limitation entirely, is to swap the whole-document LWW for a CRDT (e.g.
 Yjs/Automerge), which merges concurrent edits automatically at the character
 level instead of picking a winner.
 
-## Things to extend (good "next weekend" additions)
 
-- Swap LWW for a CRDT (Yjs) for true conflict-free merging
-- Cursor position sharing (who's editing where), not just typing indicators
-- Auth (right now `username` is just a query param, not verified)
-- Document list / creation UI instead of typing a doc id into the URL
-- Edit history / version rollback using the `version` column already stored
-
-## Resume bullet
-
-> Built a real-time collaborative notes app using WebSockets, with
-> last-write-wins conflict resolution and live multi-user sync.
