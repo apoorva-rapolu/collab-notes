@@ -107,13 +107,14 @@
 </main>
 
 <script>
-  // document_id and username come from the URL, e.g.
-  //   /static/index.html?doc=meeting-notes&user=apoorva
   const params = new URLSearchParams(window.location.search);
   const documentId = params.get("doc") || "demo";
-  const username = params.get("user") || ("user-" + Math.floor(Math.random() * 1000));
+  const username =
+    params.get("user") || ("user-" + Math.floor(Math.random() * 1000));
 
-  document.getElementById("doc-title").textContent = `Document: ${documentId} (as ${username})`;
+  document.getElementById(
+    "doc-title"
+  ).textContent = `Document: ${documentId} (as ${username})`;
 
   const editor = document.getElementById("editor");
   const statusEl = document.getElementById("status");
@@ -122,14 +123,27 @@
   const typingIndicator = document.getElementById("typing-indicator");
   const conflictBanner = document.getElementById("conflict-banner");
 
-  let baseVersion = 0;
-  let suppressEcho = false; // avoid re-broadcasting edits we just received
+  // Latest version known to exist on the server.
+  let serverVersion = 0;
+
+  // Version that our current local edit started from.
+  let editBaseVersion = 0;
+
+  // Used to detect whether the user typed again after an edit was sent.
+  let editGeneration = 0;
+  let sentGeneration = -1;
+
+  let suppressEcho = false;
   let typingTimeout = null;
   let editTimeout = null;
 
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const protocol =
+    window.location.protocol === "https:" ? "wss" : "ws";
+
   const ws = new WebSocket(
-    `${protocol}://${window.location.host}/ws/${encodeURIComponent(documentId)}?username=${encodeURIComponent(username)}`
+    `${protocol}://${window.location.host}/ws/${encodeURIComponent(
+      documentId
+    )}?username=${encodeURIComponent(username)}`
   );
 
   ws.onopen = () => {
@@ -147,77 +161,211 @@
     const msg = JSON.parse(event.data);
 
     switch (msg.type) {
+
+      // ---------------------------------------------------------
+      // Initial document state
+      // ---------------------------------------------------------
       case "init": {
         suppressEcho = true;
+
         editor.value = msg.content;
         editor.disabled = false;
+
         suppressEcho = false;
-        baseVersion = msg.version;
+
+        serverVersion = msg.version;
+        editBaseVersion = msg.version;
+
         updateMeta(msg);
         break;
       }
+
+      // ---------------------------------------------------------
+      // Document update
+      // ---------------------------------------------------------
       case "update": {
-        // Another client's edit (or the server's ack of our own edit).
-        if (document.activeElement !== editor || msg.updated_by === username) {
-          suppressEcho = true;
-          editor.value = msg.content;
-          suppressEcho = false;
+
+        const isOwnUpdate = msg.updated_by === username;
+
+        /*
+         * Our own edit was accepted by the server.
+         */
+        if (isOwnUpdate) {
+
+          /*
+           * Only replace the editor if the user has NOT typed
+           * anything new since this edit was sent.
+           */
+          if (sentGeneration === editGeneration) {
+            suppressEcho = true;
+            editor.value = msg.content;
+            suppressEcho = false;
+
+            editBaseVersion = msg.version;
+          } else {
+            /*
+             * The user continued typing after the previous edit
+             * was sent. Do NOT overwrite their newer text.
+             *
+             * Their next edit will be based on this accepted version.
+             */
+            editBaseVersion = msg.version;
+          }
+
+          serverVersion = msg.version;
+          updateMeta(msg);
+          break;
         }
-        baseVersion = msg.version;
-        updateMeta(msg);
+
+        /*
+         * Update from another user.
+         */
+        if (!isOwnUpdate) {
+
+          /*
+           * If the user is not currently editing, show the new
+           * server content immediately.
+           */
+          if (
+            document.activeElement !== editor &&
+            editGeneration === sentGeneration
+          ) {
+            suppressEcho = true;
+            editor.value = msg.content;
+            suppressEcho = false;
+
+            editBaseVersion = msg.version;
+          }
+
+          /*
+           * Always remember the newest server version.
+           *
+           * IMPORTANT:
+           * We do NOT change editBaseVersion while the user has
+           * unsent local changes.
+           */
+          serverVersion = msg.version;
+
+          updateMeta(msg);
+        }
+
         break;
       }
+
+      // ---------------------------------------------------------
+      // Presence
+      // ---------------------------------------------------------
       case "presence": {
         presenceList.innerHTML = "";
+
         msg.users.forEach((u) => {
           const li = document.createElement("li");
-          li.innerHTML = `<span class="dot"></span>${u}${u === username ? " (you)" : ""}`;
+
+          li.innerHTML =
+            `<span class="dot"></span>` +
+            `${u}${u === username ? " (you)" : ""}`;
+
           presenceList.appendChild(li);
         });
+
         break;
       }
+
+      // ---------------------------------------------------------
+      // Typing indicator
+      // ---------------------------------------------------------
       case "typing": {
-        typingIndicator.textContent = `${msg.username} is typing…`;
+        typingIndicator.textContent =
+          `${msg.username} is typing…`;
+
         clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(() => (typingIndicator.textContent = ""), 1500);
+
+        typingTimeout = setTimeout(() => {
+          typingIndicator.textContent = "";
+        }, 1500);
+
         break;
       }
+
+      // ---------------------------------------------------------
+      // LWW conflict notification
+      // ---------------------------------------------------------
       case "conflict_notice": {
-        conflictBanner.textContent = "⚠ " + msg.message;
+        conflictBanner.textContent =
+          "⚠ " + msg.message;
+
         conflictBanner.style.display = "block";
-        setTimeout(() => (conflictBanner.style.display = "none"), 4000);
+
+        setTimeout(() => {
+          conflictBanner.style.display = "none";
+        }, 4000);
+
         break;
       }
+
       case "user_joined":
-      case "user_left":
-        // presence list message already keeps the sidebar accurate;
-        // this is just useful for console debugging.
+      case "user_left": {
         console.log(msg.type, msg.username);
         break;
+      }
     }
   };
 
   function updateMeta(msg) {
-    const when = msg.updated_at ? new Date(msg.updated_at).toLocaleTimeString() : "";
-    metaEl.textContent = `v${msg.version}${msg.updated_by ? " · last edit by " + msg.updated_by : ""}`;
+    metaEl.textContent =
+      `v${msg.version}` +
+      `${msg.updated_by
+        ? " · last edit by " + msg.updated_by
+        : ""}`;
   }
 
+  // ---------------------------------------------------------
+  // Local editing
+  // ---------------------------------------------------------
   editor.addEventListener("input", () => {
+
     if (suppressEcho) return;
 
-    // Notify others someone is typing (throttled implicitly by debounce below).
-    ws.send(JSON.stringify({ type: "typing" }));
+    /*
+     * If this is the beginning of a new local edit,
+     * remember the server version we started from.
+     */
+    if (editGeneration === sentGeneration) {
+      editBaseVersion = serverVersion;
+    }
+
+    editGeneration++;
+
+    // Tell other users that we are typing.
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "typing"
+        })
+      );
+    }
 
     clearTimeout(editTimeout);
+
+    /*
+     * Wait 300 ms before sending the edit.
+     * This prevents sending one request per keystroke.
+     */
     editTimeout = setTimeout(() => {
+
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      sentGeneration = editGeneration;
+
       ws.send(
         JSON.stringify({
           type: "edit",
           content: editor.value,
-          base_version: baseVersion,
+          base_version: editBaseVersion
         })
       );
-    }, 300); // debounce so we don't send an edit on every keystroke
+
+    }, 300);
   });
 </script>
 
