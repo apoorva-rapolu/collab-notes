@@ -124,16 +124,20 @@
   const conflictBanner = document.getElementById("conflict-banner");
 
   // Latest version known to exist on the server.
-  let serverVersion = 0;
+   // The version number our NEXT edit will be sent against. Refreshed
+  // every time we get authoritative word from the server.
+  let baseVersion = 0;
 
-  // Version that our current local edit started from.
-  let editBaseVersion = 0;
+  // True while we're waiting for the server to ack an edit we sent.
+  // We only ever allow ONE of our own edits in flight at a time --
+  // see sendPendingEdit() below for why that matters.
+  let editInFlight = false;
 
-  // Used to detect whether the user typed again after an edit was sent.
-  let editGeneration = 0;
-  let sentGeneration = -1;
+  // True if the textarea changed again after we sent the in-flight
+  // edit -- tells us to send another one the moment its ack lands.
+  let pendingSend = false;
 
-    let suppressEcho = false;
+  let suppressEcho = false;
   let typingTimeout = null;
   let editTimeout = null;
 
@@ -217,60 +221,71 @@
       // ---------------------------------------------------------
       // Initial document state
       // ---------------------------------------------------------
-     case "init": {
-  suppressEcho = true;
+        case "init": {
+        suppressEcho = true;
 
-  editor.value = msg.content;
-  editor.disabled = false;
+        editor.value = msg.content;
+        editor.disabled = false;
 
-  suppressEcho = false;
+        suppressEcho = false;
 
-  serverVersion = msg.version;
-  editBaseVersion = msg.version;
+        baseVersion = msg.version;
+        editInFlight = false;
+        pendingSend = false;
 
-  editGeneration = 0;
-  sentGeneration = 0;
-
-  updateMeta(msg);
-  break;
-}
+        updateMeta(msg);
+        break;
+      }
 
       // ---------------------------------------------------------
       // Document update
       // ---------------------------------------------------------
-      case "update": {
+            case "update": {
 
         const isOwnUpdate = msg.updated_by === username;
 
-        /*
-         * Our own edit was accepted by the server.
-         */
         if (isOwnUpdate) {
-
           /*
-           * Only replace the editor if the user has NOT typed
-           * anything new since this edit was sent.
+           * The ack for the edit we just sent. Since we only ever
+           * have ONE of our own edits in flight at a time, this ack
+           * can never be "stale" relative to something newer we
+           * already sent -- so we never touch the textarea here, we
+           * just record that we're clear to send again.
            */
-          if (sentGeneration === editGeneration) {
-            suppressEcho = true;
-            editor.value = msg.content;
-            suppressEcho = false;
+          editInFlight = false;
+          baseVersion = msg.version;
 
-            editBaseVersion = msg.version;
-          } else {
-            /*
-             * The user continued typing after the previous edit
-             * was sent. Do NOT overwrite their newer text.
-             *
-             * Their next edit will be based on this accepted version.
-             */
-            editBaseVersion = msg.version;
+          if (pendingSend) {
+            // The user kept typing while this edit was in flight --
+            // send the latest content now, against the version we
+            // just confirmed.
+            sendPendingEdit();
           }
 
-          serverVersion = msg.version;
           updateMeta(msg);
           break;
         }
+
+        /*
+         * Update from another user.
+         */
+        if (!editInFlight) {
+          // No local edit outstanding -- safe to apply directly.
+          applyRemoteContent(msg.content);
+          baseVersion = msg.version;
+        }
+        /*
+         * Else: we have a local edit in flight. Don't touch the
+         * textarea -- our own edit will overwrite this the moment
+         * it's acked (that's LWW), and applying this intermediate
+         * state now would just flicker. If our in-flight edit's
+         * base_version turns out to be behind this one, the server
+         * will correctly flag it as a genuine conflict.
+         */
+
+        updateMeta(msg);
+        break;
+      }
 
               /*
          * Update from another user.
@@ -386,50 +401,45 @@
   // ---------------------------------------------------------
   // Local editing
   // ---------------------------------------------------------
-  editor.addEventListener("input", () => {
+    // ---------------------------------------------------------
+  // Send the current textarea content, but only if nothing is
+  // already in flight. If something IS in flight, just remember
+  // we owe the server a fresher edit -- the "update" handler
+  // above calls this again the instant the in-flight ack lands.
+  // ---------------------------------------------------------
+  function sendPendingEdit() {
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-    if (suppressEcho) return;
-
-    /*
-     * If this is the beginning of a new local edit,
-     * remember the server version we started from.
-     */
-    if (editGeneration === sentGeneration) {
-      editBaseVersion = serverVersion;
+    if (editInFlight) {
+      pendingSend = true;
+      return;
     }
 
-    editGeneration++;
+    editInFlight = true;
+    pendingSend = false;
+
+    ws.send(
+      JSON.stringify({
+        type: "edit",
+        content: editor.value,
+        base_version: baseVersion
+      })
+    );
+  }
+
+  editor.addEventListener("input", () => {
+    if (suppressEcho) return;
 
     // Tell other users that we are typing.
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({
-          type: "typing"
-        })
-      );
+      ws.send(JSON.stringify({ type: "typing" }));
     }
 
     clearTimeout(editTimeout);
 
-    /*
-     * Wait 300 ms before sending the edit.
-     * This prevents sending one request per keystroke.
-     */
-    editTimeout = setTimeout(() => {
-
-      if (ws.readyState !== WebSocket.OPEN) return;
-
-      sentGeneration = editGeneration;
-
-      ws.send(
-        JSON.stringify({
-          type: "edit",
-          content: editor.value,
-          base_version: editBaseVersion
-        })
-      );
-
-    }, 300);
+    // Wait 300ms after the user stops typing before sending -- this
+    // is what turns a burst of keystrokes into a single edit.
+    editTimeout = setTimeout(sendPendingEdit, 300);
   });
 </script>
 
