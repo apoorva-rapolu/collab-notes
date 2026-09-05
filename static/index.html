@@ -82,39 +82,142 @@
     border-radius: 6px;
     font-size: 13px;
   }
+  #join-screen {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+  }
+  #join-form {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 32px;
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  #join-form h1 { font-size: 18px; margin: 0 0 4px; }
+  #join-form label {
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #join-form input {
+    font-size: 14px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+  }
+  #join-form button {
+    margin-top: 6px;
+    padding: 10px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #join-form button:hover { opacity: 0.92; }
+  #join-error {
+    font-size: 12px;
+    color: #dc2626;
+    min-height: 14px;
+  }
+  #app { display: none; height: 100vh; flex-direction: column; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1 id="doc-title">Document: ...</h1>
-  <span id="status" class="disconnected">connecting…</span>
-</header>
+<div id="join-screen">
+  <form id="join-form">
+    <h1>Join a document</h1>
+    <label>
+      Document name
+      <input type="text" id="join-doc" placeholder="e.g. meeting-notes" required />
+    </label>
+    <label>
+      Your name
+      <input type="text" id="join-name" placeholder="e.g. Apoorva" required />
+    </label>
+    <div id="join-error"></div>
+    <button type="submit">Join</button>
+  </form>
+</div>
 
-<main>
-  <div id="editor-wrap">
-    <div id="conflict-banner"></div>
-    <textarea id="editor" placeholder="Start typing…" disabled></textarea>
-    <div id="meta"></div>
-    <div id="typing-indicator"></div>
-  </div>
-  <div id="sidebar">
-    <div>
-      <h2>Viewing now</h2>
-      <ul id="presence-list"></ul>
+<div id="app">
+  <header>
+    <h1 id="doc-title">Document: ...</h1>
+    <span id="status" class="disconnected">connecting…</span>
+  </header>
+
+  <main>
+    <div id="editor-wrap">
+      <div id="conflict-banner"></div>
+      <textarea id="editor" placeholder="Start typing…" disabled></textarea>
+      <div id="meta"></div>
+      <div id="typing-indicator"></div>
     </div>
-  </div>
-</main>
+    <div id="sidebar">
+      <div>
+        <h2>Viewing now</h2>
+        <ul id="presence-list"></ul>
+      </div>
+    </div>
+  </main>
+</div>
 
 <script>
   const params = new URLSearchParams(window.location.search);
-  const documentId = params.get("doc") || "demo";
-  const username =
-    params.get("user") || ("user-" + Math.floor(Math.random() * 1000));
 
-  document.getElementById(
-    "doc-title"
-  ).textContent = `Document: ${documentId} (as ${username})`;
+  // These start empty and only get set once the join form is submitted --
+  // no more reading the username from the URL.
+  let documentId = null;
+  let username = null;
+
+  const joinScreen = document.getElementById("join-screen");
+  const joinForm = document.getElementById("join-form");
+  const joinDocInput = document.getElementById("join-doc");
+  const joinNameInput = document.getElementById("join-name");
+  const joinError = document.getElementById("join-error");
+  const appEl = document.getElementById("app");
+
+  // Prefill from ?doc= if present (handy for sharing a link that already
+  // points at a document), and remember the user's name across visits.
+  joinDocInput.value = params.get("doc") || "demo";
+  joinNameInput.value = localStorage.getItem("collabNotesUsername") || "";
+
+  joinForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+
+    const doc = joinDocInput.value.trim();
+    const name = joinNameInput.value.trim();
+
+    if (!doc || !name) {
+      joinError.textContent = "Enter both a document name and your name.";
+      return;
+    }
+    joinError.textContent = "";
+
+    documentId = doc;
+    username = name;
+    localStorage.setItem("collabNotesUsername", name);
+
+    document.getElementById(
+      "doc-title"
+    ).textContent = `Document: ${documentId} (as ${username})`;
+
+    joinScreen.style.display = "none";
+    appEl.style.display = "flex";
+
+    connectWebSocket();
+  });
 
   const editor = document.getElementById("editor");
   const statusEl = document.getElementById("status");
@@ -123,8 +226,7 @@
   const typingIndicator = document.getElementById("typing-indicator");
   const conflictBanner = document.getElementById("conflict-banner");
 
-  // Latest version known to exist on the server.
-   // The version number our NEXT edit will be sent against. Refreshed
+  // The version number our NEXT edit will be sent against. Refreshed
   // every time we get authoritative word from the server.
   let baseVersion = 0;
 
@@ -221,7 +323,7 @@
       // ---------------------------------------------------------
       // Initial document state
       // ---------------------------------------------------------
-        case "init": {
+      case "init": {
         suppressEcho = true;
 
         editor.value = msg.content;
@@ -240,7 +342,7 @@
       // ---------------------------------------------------------
       // Document update
       // ---------------------------------------------------------
-            case "update": {
+      case "update": {
 
         const isOwnUpdate = msg.updated_by === username;
 
@@ -284,43 +386,6 @@
          */
 
         updateMeta(msg);
-        break;
-      }
-
-              /*
-         * Update from another user.
-         */
-        if (!isOwnUpdate) {
-
-          /*
-           * Apply it as long as WE don't have unsent local changes
-           * pending. Being focused in the box is fine -- we preserve
-           * cursor position in applyRemoteContent() -- what we must
-           * not do is stomp on keystrokes the user has typed but not
-           * sent yet (that's the editGeneration !== sentGeneration
-           * case, handled by the "else" below).
-           */
-          if (editGeneration === sentGeneration) {
-            applyRemoteContent(msg.content);
-            editBaseVersion = msg.version;
-          }
-          /*
-           * Else: we have unsent local edits. Leave the box alone so
-           * the user isn't interrupted mid-keystroke. editBaseVersion
-           * stays where it was, so our next edit will correctly be
-           * flagged as a conflict against this newer version and the
-           * conflict banner will explain what happened.
-           */
-
-          /*
-           * Always remember the newest server version, regardless of
-           * whether we applied it to the textarea just now.
-           */
-          serverVersion = msg.version;
-
-          updateMeta(msg);
-        }
-
         break;
       }
 
@@ -375,7 +440,7 @@
         break;
       }
 
-            case "user_joined":
+      case "user_joined":
       case "user_left": {
         console.log(msg.type, msg.username);
         break;
@@ -388,8 +453,6 @@
     }
   }
 
-  connectWebSocket();
-
   function updateMeta(msg) {
     metaEl.textContent =
       `v${msg.version}` +
@@ -399,9 +462,6 @@
   }
 
   // ---------------------------------------------------------
-  // Local editing
-  // ---------------------------------------------------------
-    // ---------------------------------------------------------
   // Send the current textarea content, but only if nothing is
   // already in flight. If something IS in flight, just remember
   // we owe the server a fresher edit -- the "update" handler
