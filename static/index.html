@@ -165,20 +165,23 @@
       // ---------------------------------------------------------
       // Initial document state
       // ---------------------------------------------------------
-      case "init": {
-        suppressEcho = true;
+     case "init": {
+  suppressEcho = true;
 
-        editor.value = msg.content;
-        editor.disabled = false;
+  editor.value = msg.content;
+  editor.disabled = false;
 
-        suppressEcho = false;
+  suppressEcho = false;
 
-        serverVersion = msg.version;
-        editBaseVersion = msg.version;
+  serverVersion = msg.version;
+  editBaseVersion = msg.version;
 
-        updateMeta(msg);
-        break;
-      }
+  editGeneration = 0;
+  sentGeneration = 0;
+
+  updateMeta(msg);
+  break;
+}
 
       // ---------------------------------------------------------
       // Document update
