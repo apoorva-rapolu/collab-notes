@@ -144,7 +144,7 @@
     </label>
     <label>
       Your name
-      <input type="text" id="join-name" placeholder="e.g. Apoorva" required />
+      <input type="text" id="join-name" required />
     </label>
     <div id="join-error"></div>
     <button type="submit">Join</button>
@@ -191,7 +191,6 @@
   // Prefill from ?doc= if present (handy for sharing a link that already
   // points at a document), and remember the user's name across visits.
   joinDocInput.value = params.get("doc") || "demo";
-  joinNameInput.value = localStorage.getItem("collabNotesUsername") || "";
 
   joinForm.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -207,7 +206,6 @@
 
     documentId = doc;
     username = name;
-    localStorage.setItem("collabNotesUsername", name);
 
     document.getElementById(
       "doc-title"
